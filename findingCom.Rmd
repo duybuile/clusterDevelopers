@@ -1,0 +1,276 @@
+---
+title: "Finding Communities"
+author: "Duy Bui"
+date: "23 April 2016"
+output: html_document
+abstract: 
+  This following document demonstrates a solution to a graph problem proposed by BlueOptima. It includes the experiments of different graph algorithms to find communities in a weighted network. The most suitable algorithm was chosen to identify communities in a software company. 
+  It is noted that the document is written with the inclusion of R code in order to reproduction if necessary.   
+---
+
+# 1. Data loading and processing
+```{r, echo=FALSE, results='hide', warning=FALSE, message=FALSE}
+setwd("C:/Users/duy.bui/Documents/GitHub/kuramoto")
+WORKSPACE <- getwd()
+```
+
+```{r, results='hide', warning=FALSE, message=FALSE}
+library(igraph)
+library(knitr)
+```
+
+The data includes the following 3 files:
+
+  - jira.csv: Data from Jira (Task tracker)
+  - effort_on_tasks.csv: Effort on task  
+  - effort_on_repos.csv: Coding effort (CE) on repositories
+  
+```{r, echo=TRUE}
+jira <- read.csv(file = paste(WORKSPACE, "data/jira.csv", sep = "/"), header = TRUE, sep = ",", 
+                 stringsAsFactors = FALSE, strip.white = TRUE)
+
+tasks <- read.csv(file = paste(WORKSPACE, "data/effort_on_tasks.csv", sep = "/"), header = TRUE, 
+                  sep = ",", stringsAsFactors = FALSE, strip.white = TRUE)
+
+repos <- read.csv(file = paste(WORKSPACE, "data/effort_on_repos.csv", sep = "/"), header = TRUE, 
+                  sep = ",", stringsAsFactors = FALSE, strip.white = TRUE)
+```
+
+### Pre-processing data
+Pre-processing data will contain two following tasks:
+
+ - Filter out bad data, i.e. missing values on Worker.ID. and Task.ID
+ - Deselect unneccessary data fields
+ 
+```{r, echo=TRUE}
+# Remove missing values
+jira <- subset(jira, !is.na(jira$Worker.Id) & !is.na(jira$Task.Id))
+repos <- subset(repos, !is.na(repos$Worker.ID))
+tasks <- subset(tasks, !is.na(tasks$Worker.ID) & tasks$Task.id != "")
+
+# Deselect unneccessary data fields 
+jira <- subset(jira, select = c("Worker.Id", "Task.Id"))
+repos <- subset(repos, select = -c(Month..Day..Year.of.Date))
+tasks <- subset(tasks, select = -c(Date))
+```
+
+### Understanding data
+We work on some codes to understand the data
+```{r}
+# number of unique workers on each database
+print(paste("Number of unique workers on Jira:", length(unique(jira$Worker.Id)), sep = " "))
+print(paste("Number of unique workers on Coding effort:", length(unique(repos$Worker.ID)), sep = " "))
+print(paste("Number of unique workers on Task:", length(unique(tasks$Worker.ID)), sep = " "))
+
+# number of common Workers on Jira and coding effort
+print(paste("Number of common Workers on Jira and coding effort:", length(intersect(unique(jira$Worker.Id), unique(repos$Worker.ID))), sep = " "))
+# number of common Workers on Jira and task effort
+print(paste("Number of common Workers on Jira and task effort:", length(intersect(unique(jira$Worker.Id), unique(tasks$Worker.ID))), sep = " "))
+```
+
+Jira data includes more unique workers than the other two, so that we choose this dataset for finding communities. It is also quite interesting that Jira data does not share many workers in common with the other two.   
+
+# 2. Finding communities
+To start off, we define our graph with:
+
+ - **vertex**: a worker or a task
+ - **edge**: a connection from a worker to a task
+ - **weight**: number of times a worker sumbits a task on Jira
+
+This graph could be built from the jira data. We use 10% random data first to test the speed of different algorithms
+
+```{r, eval=TRUE}
+# Take a sample of 10% data
+set.seed(3223)
+jira_sample_10 <- jira[sample(nrow(jira), nrow(jira)*0.1), ]
+
+# Create an edge-list data frame
+jira_edgeweight_10 <- as.data.frame(table(jira_sample_10))
+# Deselect any edge with weight as 0. 
+jira_edgeweight_10 <- subset(jira_edgeweight_10, jira_edgeweight_10$Freq > 0)
+
+# Generate a graph with vertices and edges
+jira_graph_10 <- graph_from_edgelist(as.matrix(jira_edgeweight_10[,1:2]), directed = FALSE)
+# Add weight into each edge
+E(jira_graph_10)$weight = jira_edgeweight_10[,3]
+```
+
+Using two first common algorithms: 
+
+ - **fast greedy**: a bottom-down hierarchical approach to optimise the modularity
+ - **walktrap**: random walk approach
+
+```{r}
+# Fast greedy community detection
+fc_10 <- fastgreedy.community(jira_graph_10, weights = E(jira_graph_10)$weight)
+nrow(sizes(fc_10))
+modularity(fc_10)
+# Walktrap community detection
+wt_10 <- walktrap.community(jira_graph_10, weights = E(jira_graph_10)$weight)
+nrow(sizes(wt_10))
+modularity(wt_10)
+```
+
+**Walktrap** performs a bit worse than **fast greedy** with **1626** communities and a smaller modularity (**0.9687593** versus **0.9797215**). We try a few more algorithms:
+
+ - **label propagation**: each node is assigned a k label which is updated during each iterative run
+ - **info map**: find the community that minimizes the length of random walker trajectory
+ 
+```{r}
+# Label propagation
+lp_10 <- label.propagation.community(jira_graph_10, weights = E(jira_graph_10)$weight)
+nrow(sizes(lp_10))
+modularity(lp_10)
+# Leading eigenvector
+ic_10 <- infomap.community(jira_graph_10, e.weights = E(jira_graph_10)$weight)
+nrow(sizes(ic_10))
+modularity(ic_10)
+```
+
+With modularity as **0.9088545** and **0.9170358** respectively, both label propagation and info map have worse performance than fast greedy and walk trap. Other than that, igraph library has alternative algorithms such as edge betweeness, leading eigenvector or spring class but they are either not suitable for large network (high complexity) or inapplicable to weighted graph. 
+
+Another considerable algorithm is using **Self-organised map** (SOM) with a greedy fine-tuning algorithm. However, [this algorithm](https://machinelearningnow.wordpress.com/2014/08/22/community-detection/) is highly complex and only suitable for small graphs though it is proved to perform better than fast greedy. Trying this algorithm on the graph of 10% data (graph of 29k edges), the computer was freezing halfway and unable to produce the final result. 
+
+Since fast greedy and walktrap have a quite similar performance, we try these both on 50% of data. 
+
+```{r, results='hide', warning=FALSE}
+# Remove all variables of the previous run
+rm(jira_edgeweight_10, jira_graph_10, jira_sample_10, fc_10, wt_10, lp_10, ic_10)
+```
+```{r, eval=FALSE}
+# Take a sample of 10% data
+set.seed(3223)
+jira_sample_50 <- jira[sample(nrow(jira), nrow(jira)*0.5), ]
+
+# Create an edge-list data frame
+jira_edgeweight_50 <- as.data.frame(table(jira_sample_50))
+# Deselect any edge with weight as 0. 
+jira_edgeweight_50 <- subset(jira_edgeweight_50, jira_edgeweight_50$Freq > 0)
+
+# Generate a graph with vertices and edges
+jira_graph_50 <- graph_from_edgelist(as.matrix(jira_edgeweight_50[,1:2]), directed = FALSE)
+# Add weight into each edge
+E(jira_graph_50)$weight = jira_edgeweight_50[,3]
+
+# Save the graph
+save(jira_graph_50, file = "jira_graph_50.Rdata")
+```
+
+```{r, warning=FALSE}
+# This is to reduce the compiling time
+load("jira_graph_50.Rdata")
+
+# Fast greedy community detection
+fc_50 <- fastgreedy.community(jira_graph_50, weights = E(jira_graph_50)$weight)
+nrow(sizes(fc_50))
+modularity(fc_50)
+# Walktrap community detection
+wt_50 <- walktrap.community(jira_graph_50, weights = E(jira_graph_50)$weight)
+nrow(sizes(wt_50))
+modularity(wt_50)
+
+rm(jira_graph_50, fc_50, wt_50)
+```
+
+When the sample data increases, fast greedy performs far better than walktrap with a smaller community size (**972** versus **1724**) and higher modularity (**0.971044** versus **0.9526203**). 
+
+Similarly, we perform fast greedy algorithm on the whole data (100% of data).
+
+```{r}
+# The following graph was prepared the same way as with 10% and 50% of data but with 100% of data.
+load("jira_graph.Rdata")
+
+fc <- fastgreedy.community(jira_graph, weights = E(jira_graph)$weight)
+nrow(sizes(fc))
+modularity(fc)
+```
+
+So, we have 842 communities with a modularity of 0.9689408. Since the problem is to find working groups, we remove tasks from each community.
+
+```{r}
+# Retrieve the community from fast greedy (there are 842 communities)
+com <- communities(fc)
+
+# Retrieve the unique task id from the data
+unique_task <- unique(jira$Task.Id)
+
+# Remove any task elements from each community
+working_groups <- lapply(com, function(x){setdiff(unlist(x), unique_task)})
+```
+
+We finally found 842 working groups (in the **working_groups** list). 
+
+# 3. Find reviewers/testers/developers
+**Assumption:** Reviewers should have 0 coding efforts while developers must have much higher coding efforts than testers.
+
+Based on that, we calculate the coding effort for each person in the repository data
+
+```{r}
+work_code <- aggregate(Coding.Effort ~ Worker.ID, data = repos, FUN = sum)
+# number of workers who have coding effort
+nrow(work_code)
+# number of unique workers on Jira database
+length(unique(jira$Worker.Id))
+# number of common Workers on Jira and coding effort
+length(intersect(unique(jira$Worker.Id), unique(repos$Worker.ID)))
+# number of common Workers on Jira and task effort
+length(intersect(unique(jira$Worker.Id), unique(tasks$Worker.ID)))
+```
+
+As can be seen, there are 3287 unique workers on Jira data, while this number is 2621 on the coding effort data. However, the number of common workers who appear on both data is only 536. This means we can only predict the role of 536 workers in the community. (Needless to say, jira and task effort data only share 229 workers in common) 
+
+On the other hand, it is quite obvious that developers have more coding effort than testers. Also, it is a rule of thumb that the ratio between testers and developers is normally 1:2 or 1:3. We assume that the ratio here is 3:7 (3 testers versus 7 developers). We plot a histogram to see if there is any abnormality
+
+```{r}
+# Subset the developers and testers only
+dev_test <- subset(work_code, work_code$Coding.Effort !=0)
+hist(dev_test$Coding.Effort, breaks = 100, main = "Histogram of testers and developers", xlab = "Coding effort")
+abline(v = quantile(dev_test$Coding.Effort, 0.3), col = "red")
+```
+
+We set a thresold of 30% and identify the roles for each worker on jira data. 
+
+```{r}
+jira_workers <- data.frame(Worker.ID = unique(jira$Worker.Id), role = "")
+jira_workers$role <- as.character(jira_workers$role)
+
+# Take the threshold at 30%
+threshold = quantile(dev_test$Coding.Effort, 0.3)
+
+jira_workers[jira_workers$Worker.ID %in% work_code[work_code$Coding.Effort == 0,"Worker.ID"],"role"] = "Reviewers"
+jira_workers[jira_workers$Worker.ID %in% work_code[work_code$Coding.Effort > threshold,"Worker.ID"],"role"] = "Developers"
+jira_workers[jira_workers$Worker.ID %in% work_code[work_code$Coding.Effort <= threshold & work_code$Coding.Effort > 0,"Worker.ID"],"role"] = "Testers"
+
+# Print the result
+table(jira_workers$role)
+```
+
+
+# 4. Find people who work in isolation/work in a team
+We could use the result from the community finding to solve this problem. Communities with only one worker means people who work in isolation and vice versa.
+
+```{r}
+# Set the condition for community whose size is 1
+cond <- sapply(working_groups, function(x) length(x) == 1 )
+# People who work on their own
+isolation <- working_groups[cond]
+# People who work in the team
+team <- working_groups[!cond]
+```
+
+The results show that we have 584 employees who work in isolation, while there are 258 teams of multiple workers.
+
+# Discussion
+The input data is quite big (490909 rows for Jira), which normally requires big data technology. However, the edge-list representation of graphs (where all the 0-weight edges are trimmed off) reduces the size of the data significantly, which makes it applicable to different algorithms in *igraph* library. Having said that, if the size of the data is higher, it is neccessary to work on [big data technology](http://cseweb.ucsd.edu/~avattani/papers/mrgreedy.pdf) such as **MapReduce** and **GiraphX**. 
+
+Community on other data sets: The first problem of finding communities was solved by using Jira data since this dataset seems more complete than the other two when it comes to the number of unique workers. The idea is that workers are in the same community if they work on the same task. However, the same techniques could be applied to other data sets:
+
+ - *Coding effort*: workers who work in the same repository/application are in the same community and vice versa
+ - *Effort on task*: workers who work in the same repository/applications/tasks are in the same community and vice versa
+
+Likewise, the final task of finding workers on the same team or in isolation could be different if the community is built from different data sets. 
+
+The second task of finding reviewers/developers/testers could be different if the assumption ratio of testers and developers is set differently. Nevertheless, for such tasks, it is the best to ask the clients for further information/clues of reviewers/testers/developers, so that the result will be more accurate. 
+
+# Conclusion
+The document shows a graph solution to a typical unsupervised learning problem: finding communities in a weighted network. The data (provided by BlueOptima) is from a software company showing the relationship between employees, tasks and other application features. Fast greedy was chosen for this problem since it is fast and able to work well with a large network. Nevertheless, the document also suggests other approaches to work on the data, such as using other data sets, or applying different big data techniques.  
